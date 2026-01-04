@@ -3,6 +3,7 @@ const http = require("http");
 const { Server } = require("socket.io");
 const cors = require("cors");
 const axios = require("axios");
+const { createClient } = require("redis");
 
 const app = express();
 app.use(cors());
@@ -13,78 +14,74 @@ const io = new Server(server, {
     cors: { origin: "*", methods: ["GET", "POST"] },
 });
 
-const GO_RUNNER_URL = "http://localhost:8080/execute";
+const GO_URL = process.env.GO_API_URL || "http://localhost:8080/execute";
+const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
+const redisClient = createClient({ url: REDIS_URL });
+redisClient.on('error', (err) => console.log('Redis Client Error', err));
 
-// Store the state of each room in memory (Run code + Language)
-// Format: { "room-id": { code: "...", language: "python" } }
-const roomStates = {};
+async function startServer() {
+    await redisClient.connect();
+    console.log("Connected to Redis");
 
-io.on("connection", (socket) => {
-    console.log(`User connected: ${socket.id}`);
+    io.on("connection", (socket) => {
+        console.log(`User connected: ${socket.id}`);
 
-    // 1. User Joins a Room
-    socket.on("join-room", (roomId) => {
-        socket.join(roomId);
-        console.log(`User ${socket.id} joined room: ${roomId}`);
+        socket.on("join-room", async (roomId) => {
+            socket.join(roomId);
+            const storedRoom = await redisClient.get(roomId);
 
-        // If room doesn't exist, initialize it
-        if (!roomStates[roomId]) {
-            roomStates[roomId] = {
-                code: 'print("Hello World")',
-                language: "python"
-            };
-        }
+            let roomData;
+            if (storedRoom) {
+                roomData = JSON.parse(storedRoom);
+            } else {
+                roomData = { code: 'print("Hello World")', language: "python" };
+                await redisClient.set(roomId, JSON.stringify(roomData));
+            }
 
-        // Send current state to the NEW user only
-        const state = roomStates[roomId];
-        socket.emit("code-update", state.code);
-        socket.emit("language-update", state.language);
+            socket.emit("code-update", roomData.code);
+            socket.emit("language-update", roomData.language);
+        });
+
+        socket.on("code-update", async ({ roomId, code }) => {
+            socket.to(roomId).emit("code-update", code);
+            const storedRoom = await redisClient.get(roomId);
+            if (storedRoom) {
+                const data = JSON.parse(storedRoom);
+                data.code = code;
+                await redisClient.set(roomId, JSON.stringify(data));
+            }
+        });
+
+        socket.on("language-change", async ({ roomId, language }) => {
+            socket.to(roomId).emit("language-update", language);
+            const storedRoom = await redisClient.get(roomId);
+            if (storedRoom) {
+                const data = JSON.parse(storedRoom);
+                data.language = language;
+                await redisClient.set(roomId, JSON.stringify(data));
+            }
+        });
+
+        // ENSURE THIS APPEARS ONLY ONCE
+        socket.on("run-code", async ({ roomId, language, code }) => {
+            console.log(`Running ${language} in room ${roomId}`);
+            try {
+                const response = await axios.post(GO_URL, {
+                    language: language,
+                    code: code,
+                });
+                socket.emit("execution-result", response.data);
+            } catch (error) {
+                console.error(error);
+                socket.emit("execution-result", { error: "Execution failed" });
+            }
+        });
     });
 
-    // 2. Sync Code Changes
-    socket.on("code-update", ({ roomId, code }) => {
-        if (!roomStates[roomId]) return;
-
-        // Update server memory
-        roomStates[roomId].code = code;
-
-        // Broadcast to everyone else in the room
-        socket.to(roomId).emit("code-update", code);
+    const PORT = 3000;
+    server.listen(PORT, () => {
+        console.log(`Web Editor running on http://localhost:${PORT}`);
     });
+}
 
-    // 3. Sync Language Changes (The Fix for your Bug!)
-    socket.on("language-change", ({ roomId, language }) => {
-        if (!roomStates[roomId]) return;
-
-        // Update server memory
-        roomStates[roomId].language = language;
-
-        // Broadcast to everyone else in the room
-        socket.to(roomId).emit("language-update", language);
-    });
-
-    // 4. Run Code
-    socket.on("run-code", async ({ roomId, code }) => {
-        if (!roomStates[roomId]) return;
-
-        const language = roomStates[roomId].language;
-        console.log(`Running ${language} in room ${roomId}`);
-
-        try {
-            const response = await axios.post(GO_RUNNER_URL, {
-                language: language,
-                code: code,
-            });
-            // Send result back to the specific user
-            socket.emit("execution-result", response.data);
-        } catch (error) {
-            console.error("Runner Error:", error.message);
-            socket.emit("execution-result", { error: "Failed to connect to execution engine" });
-        }
-    });
-});
-
-const PORT = 3000;
-server.listen(PORT, () => {
-    console.log(`Web Editor running on http://localhost:${PORT}`);
-});
+startServer();

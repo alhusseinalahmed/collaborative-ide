@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  # 1. The Database
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data  # Persist data even if container is deleted
+
+  # 2. The Web Editor (Node.js)
+  web-editor:
+    build: ./web-editor
+    ports:
+      - "3000:3000"
+    environment:
+      - REDIS_URL=redis://redis:6379  # Talk to the 'redis' service above
+      - GO_API_URL=http://host.docker.internal:8080/execute # Talk to the Go app on Host
+    depends_on:
+      - redis
+    # This magic line allows the container to talk to your laptop's localhost
+    extra_hosts:
+      - "host.docker.internal:host-gateway" 
+
+volumes:
+  redis_data:

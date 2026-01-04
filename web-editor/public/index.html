@@ -170,13 +170,18 @@
         socket.emit("code-update", { roomId, code });
       }
 
+      // public/index.html
+
       function runCode() {
         const outputDiv = document.getElementById("output");
         outputDiv.innerText = "Running...";
         outputDiv.classList.remove("error");
 
+        const lang = document.getElementById("language").value; // <--- Get the language
+
         socket.emit("run-code", {
           roomId: roomId,
+          language: lang, // <--- Send it to the server
           code: editor.getValue(),
         });
       }
