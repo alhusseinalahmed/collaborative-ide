@@ -39,13 +39,21 @@ type ExecutionResponse struct {
 //
 // If the execution takes longer than 2 seconds, the execution will be terminated and the response will contain an error message.
 func executeHandler(w http.ResponseWriter, r *http.Request) {
+	// 1. Parse Request
 	var req ExecutionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request", 400)
 		return
 	}
 
-	tmpFile, err := os.CreateTemp("", "usercode-*.py")
+	// 2. Setup Temp File
+	// Note: We need the right extension (.py or .cpp)
+	ext := "py"
+	if req.Language == "cpp" {
+		ext = "cpp"
+	}
+
+	tmpFile, err := os.CreateTemp("", "usercode-*."+ext)
 	if err != nil {
 		http.Error(w, "Could not create file", 500)
 		return
@@ -58,40 +66,46 @@ func executeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	tmpFile.Close()
 
-	// Create a "Context" with a 2-second timeout.
-	// This creates a timer. If the timer hits 2s, the context "dies".
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel() // Clean up the timer when we are done
+	// 3. Configure Docker Command based on Language
+	var cmd *exec.Cmd
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // 5s timeout
+	defer cancel()
 
-	// Resource Limits ---
-	// We add flags to restrict the container:
-	// --memory 128m: Crash if it uses > 128MB RAM
-	// --cpus 0.5: Use max 50% of one CPU core
-	// --network none: Disable Internet access (Security!)
-	cmd := exec.CommandContext(ctx, "docker", "run", "--rm",
-		"--memory=128m",
-		"--cpus=0.5",
-		"--network=none",
-		"-v", fmt.Sprintf("%s:/app/script.py", tmpFile.Name()),
-		"python:3.9-alpine",
-		"python", "/app/script.py",
-	)
+	if req.Language == "python" {
+		// Python Logic (Same as before)
+		cmd = exec.CommandContext(ctx, "docker", "run", "--rm",
+			"--memory=128m", "--cpus=0.5", "--network=none",
+			"-v", fmt.Sprintf("%s:/app/script.py", tmpFile.Name()),
+			"python:3.9-alpine",
+			"python", "/app/script.py",
+		)
+	} else if req.Language == "cpp" {
+		// C++ Logic: Compile AND Run
+		// We use 'sh -c' to run multiple commands inside the container
+		// 1. g++ script.cpp -o app (Compile)
+		// 2. ./app (Run if compile succeeds)
+		cmd = exec.CommandContext(ctx, "docker", "run", "--rm",
+			"--memory=128m", "--cpus=0.5", "--network=none",
+			"-v", fmt.Sprintf("%s:/app/script.cpp", tmpFile.Name()),
+			"gcc:11.3.0", // A Docker image with GCC installed
+			"sh", "-c", "g++ /app/script.cpp -o /app/runner && /app/runner",
+		)
+	} else {
+		http.Error(w, "Language not supported", 400)
+		return
+	}
 
-	// Separate Output Streams ---
-	// We create two buffers to capture streams separately
+	// 4. Run and Capture Output (Same as before)
 	var stdoutBuf, stderrBuf bytes.Buffer
 	cmd.Stdout = &stdoutBuf
 	cmd.Stderr = &stderrBuf
 
-	// Run the command
 	err = cmd.Run()
 
-	// Handle Timeouts specifically
 	if ctx.Err() == context.DeadlineExceeded {
-		stderrBuf.WriteString("\nExecution Timed Out (Limit: 2s)")
+		stderrBuf.WriteString("\nExecution Timed Out (Limit: 5s)")
 	}
 
-	// Prepare response
 	resp := ExecutionResponse{
 		Output: stdoutBuf.String(),
 		Error:  stderrBuf.String(),

@@ -51,7 +51,13 @@
       }
       .error {
         color: #f48771;
-      } /* VS Code red color */
+      }
+      select {
+        padding: 5px;
+        background: #3c3c3c;
+        color: white;
+        border: none;
+      }
     </style>
   </head>
   <body>
@@ -60,6 +66,10 @@
     <div id="sidebar">
       <div class="header">
         <span>Console</span>
+        <select id="language" onchange="changeLanguage()">
+          <option value="python">Python</option>
+          <option value="cpp">C++</option>
+        </select>
         <button onclick="runCode()">▶ Run</button>
       </div>
       <div id="output"></div>
@@ -68,12 +78,16 @@
     <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
+
     <script>
       const socket = io();
-      let editor; // Global variable for the editor instance
-      let isReceivingUpdate = false; // Flag to prevent infinite loops
+      let editor;
+      let isReceivingUpdate = false;
 
-      // 1. Initialize Monaco Editor
+      // Get Room ID from URL (e.g. localhost:3000?room=123)
+      const urlParams = new URLSearchParams(window.location.search);
+      const roomId = urlParams.get("room") || "default-room";
+
       require.config({
         paths: {
           vs: "https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs",
@@ -84,57 +98,47 @@
         editor = monaco.editor.create(
           document.getElementById("editor-container"),
           {
-            value:
-              'print("Hello from Monaco!")\nimport time\ntime.sleep(1)\nprint("Done")',
+            value: 'print("Loading...")',
             language: "python",
-            theme: "vs-dark", // The classic Dark Mode
+            theme: "vs-dark",
             automaticLayout: true,
           }
         );
 
-        // 2. Listen for changes (User Typing)
-        editor.onDidChangeModelContent((event) => {
-          // If the change came from the server, don't emit it back!
-          if (isReceivingUpdate) return;
+        // Join the room once editor is ready
+        socket.emit("join-room", roomId);
 
+        // Listen for local typing
+        editor.onDidChangeModelContent((event) => {
+          if (isReceivingUpdate) return;
           const code = editor.getValue();
-          socket.emit("code-update", code);
+          socket.emit("code-update", { roomId, code });
         });
       });
 
-      // 3. Receive changes from other users
+      // --- Event Listeners ---
+
       socket.on("code-update", (newCode) => {
         if (editor && editor.getValue() !== newCode) {
-          isReceivingUpdate = true; // Set flag
-
-          // Save cursor position
-          const position = editor.getPosition();
-
+          isReceivingUpdate = true;
+          const pos = editor.getPosition(); // Save cursor
           editor.setValue(newCode);
-
-          // Restore cursor position (Simple fix, not perfect yet)
-          editor.setPosition(position);
-
-          isReceivingUpdate = false; // Reset flag
+          editor.setPosition(pos); // Restore cursor
+          isReceivingUpdate = false;
         }
       });
 
-      // 4. Run Code Logic
-      function runCode() {
-        const outputDiv = document.getElementById("output");
-        outputDiv.innerText = "Running...";
-        outputDiv.classList.remove("error");
-
-        socket.emit("run-code", {
-          language: "python",
-          code: editor.getValue(), // Get code from Monaco
-        });
-      }
+      socket.on("language-update", (newLang) => {
+        const dropdown = document.getElementById("language");
+        if (dropdown.value !== newLang) {
+          dropdown.value = newLang;
+          monaco.editor.setModelLanguage(editor.getModel(), newLang);
+        }
+      });
 
       socket.on("execution-result", (result) => {
         const outputDiv = document.getElementById("output");
         outputDiv.innerText = "";
-
         if (result.output) outputDiv.innerText += result.output;
         if (result.error) {
           const errElem = document.createElement("span");
@@ -143,6 +147,39 @@
           outputDiv.appendChild(errElem);
         }
       });
+
+      // --- Functions ---
+
+      function changeLanguage() {
+        const lang = document.getElementById("language").value;
+
+        // Set Template Code locally
+        let code = "";
+        if (lang === "cpp") {
+          code =
+            '#include <iostream>\n\nint main() {\n    std::cout << "Hello from C++" << std::endl;\n    return 0;\n}';
+        } else {
+          code = 'print("Hello from Python")';
+        }
+
+        editor.setValue(code);
+        monaco.editor.setModelLanguage(editor.getModel(), lang);
+
+        // Tell Server to update the Room
+        socket.emit("language-change", { roomId, language: lang });
+        socket.emit("code-update", { roomId, code });
+      }
+
+      function runCode() {
+        const outputDiv = document.getElementById("output");
+        outputDiv.innerText = "Running...";
+        outputDiv.classList.remove("error");
+
+        socket.emit("run-code", {
+          roomId: roomId,
+          code: editor.getValue(),
+        });
+      }
     </script>
   </body>
 </html>
