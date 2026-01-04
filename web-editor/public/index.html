@@ -2,141 +2,28 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Collaborative IDE</title>
-    <style>
-      :root {
-        --bg-dark: #1e1e1e;
-        --bg-panel: #181818;
-        --border: #333;
-        --accent: #007acc;
-        --text: #cccccc;
-      }
-
-      body {
-        margin: 0;
-        display: flex;
-        flex-direction: column;
-        height: 100vh;
-        background-color: var(--bg-dark);
-        color: var(--text);
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-          sans-serif;
-        overflow: hidden; /* Prevent body scroll */
-      }
-
-      /* --- EDITOR SECTION (Top) --- */
-      #editor-wrapper {
-        flex: 1; /* Takes all remaining space */
-        position: relative;
-        min-height: 100px;
-      }
-
-      /* --- RESIZER HANDLE --- */
-      #resizer {
-        height: 6px;
-        background: #252526;
-        cursor: row-resize;
-        border-top: 1px solid #000;
-        border-bottom: 1px solid #000;
-        transition: background 0.2s;
-        z-index: 10;
-      }
-      #resizer:hover {
-        background: var(--accent);
-      }
-
-      /* --- CONSOLE SECTION (Bottom) --- */
-      #console-wrapper {
-        height: 250px; /* Default height */
-        background: var(--bg-panel);
-        display: flex;
-        flex-direction: column;
-        min-height: 50px;
-        max-height: 80vh;
-      }
-
-      /* Toolbar styling */
-      .toolbar {
-        display: flex;
-        align-items: center;
-        padding: 8px 15px;
-        background: #252526;
-        border-bottom: 1px solid var(--border);
-        justify-content: space-between;
-        font-size: 13px;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        font-weight: 600;
-      }
-
-      .toolbar-group {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-      }
-
-      /* Output Area */
-      #output {
-        flex: 1;
-        padding: 15px;
-        font-family: "Consolas", "Courier New", monospace;
-        font-size: 14px;
-        white-space: pre-wrap;
-        overflow-y: auto;
-        color: #d4d4d4;
-      }
-
-      /* Controls */
-      select {
-        background: #3c3c3c;
-        color: white;
-        border: 1px solid #444;
-        padding: 4px 8px;
-        border-radius: 3px;
-        outline: none;
-        cursor: pointer;
-      }
-
-      button {
-        padding: 5px 12px;
-        border: none;
-        border-radius: 3px;
-        cursor: pointer;
-        font-weight: 600;
-        font-size: 12px;
-        transition: 0.2s;
-        display: flex;
-        align-items: center;
-        gap: 5px;
-      }
-
-      /* Button Variants */
-      .btn-run {
-        background: #2ea043;
-        color: white;
-      }
-      .btn-run:hover {
-        background: #3fb950;
-      }
-
-      .btn-share {
-        background: #333;
-        color: white;
-        border: 1px solid #555;
-      }
-      .btn-share:hover {
-        background: #444;
-      }
-
-      .error {
-        color: #f48771;
-      }
-      .success {
-        color: #89d185;
-      }
-    </style>
+    <link rel="stylesheet" href="style.css" />
   </head>
   <body>
+    <div id="header">
+      <div class="header-left">
+        <span class="app-title">⚡ Collaborative IDE</span>
+        <span class="room-info"
+          >Room: <span id="room-id-display">...</span></span
+        >
+      </div>
+      <div class="header-right">
+        <span id="connection-status" class="status-offline"
+          >● Connecting...</span
+        >
+        <button class="btn-share" onclick="copyRoomLink()">
+          🔗 Share Room
+        </button>
+      </div>
+    </div>
+
     <div id="editor-wrapper"></div>
 
     <div id="resizer" title="Drag to resize"></div>
@@ -145,197 +32,24 @@
       <div class="toolbar">
         <div class="toolbar-group">
           <span>Console Output</span>
-          <button
-            onclick="clearConsole()"
-            class="btn-share"
-            style="padding: 2px 8px; font-size: 10px"
-          >
-            Clear
-          </button>
+          <button onclick="clearConsole()" class="btn-secondary">Clear</button>
         </div>
 
         <div class="toolbar-group">
-          <button class="btn-share" onclick="copyRoomLink()">
-            🔗 Share Room
-          </button>
-
           <select id="language" onchange="changeLanguage()">
             <option value="python">Python</option>
             <option value="cpp">C++</option>
           </select>
-
           <button class="btn-run" onclick="runCode()">▶ Run Code</button>
         </div>
       </div>
       <div id="output">Ready to execute...</div>
     </div>
 
+    <div id="toast">Code Saved & Formatted!</div>
+
     <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
-
-    <script>
-      const socket = io();
-      let editor;
-      let isReceivingUpdate = false;
-
-      // --- 1. RESIZABLE WINDOW LOGIC ---
-      const resizer = document.getElementById("resizer");
-      const consoleWrapper = document.getElementById("console-wrapper");
-      const editorWrapper = document.getElementById("editor-wrapper");
-
-      resizer.addEventListener("mousedown", (e) => {
-        e.preventDefault();
-        document.addEventListener("mousemove", resize);
-        document.addEventListener("mouseup", stopResize);
-      });
-
-      function resize(e) {
-        // Calculate height from bottom of screen
-        const totalHeight = window.innerHeight;
-        const newConsoleHeight = totalHeight - e.clientY;
-
-        // Limit minimum and maximum sizes
-        if (newConsoleHeight > 50 && newConsoleHeight < totalHeight - 100) {
-          consoleWrapper.style.height = `${newConsoleHeight}px`;
-
-          // IMPORTANT: Tell Monaco Editor to re-measure its container
-          // otherwise the text area won't shrink/grow
-          if (editor) editor.layout();
-        }
-      }
-
-      function stopResize() {
-        document.removeEventListener("mousemove", resize);
-        document.removeEventListener("mouseup", stopResize);
-      }
-
-      // Window resize handler
-      window.addEventListener("resize", () => {
-        if (editor) editor.layout();
-      });
-      // ---------------------------------
-
-      // --- 2. ROOM & EDITOR LOGIC (Same as before) ---
-      const urlParams = new URLSearchParams(window.location.search);
-      let roomId = urlParams.get("room");
-
-      if (!roomId) {
-        roomId = Math.random().toString(36).substring(2, 9);
-        window.location.search = `?room=${roomId}`;
-      }
-
-      require.config({
-        paths: {
-          vs: "https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs",
-        },
-      });
-
-      require(["vs/editor/editor.main"], function () {
-        editor = monaco.editor.create(
-          document.getElementById("editor-wrapper"),
-          {
-            value: 'print("Loading...")',
-            language: "python",
-            theme: "vs-dark",
-            automaticLayout: false, // We handle layout manually now for performance
-            minimap: { enabled: false }, // Cleaner look
-            fontSize: 14,
-            scrollBeyondLastLine: false,
-          }
-        );
-
-        // Trigger layout once to fit the new div
-        editor.layout();
-
-        socket.emit("join-room", roomId);
-
-        editor.onDidChangeModelContent((event) => {
-          if (isReceivingUpdate) return;
-          const code = editor.getValue();
-          socket.emit("code-update", { roomId, code });
-        });
-      });
-
-      // --- Event Listeners ---
-      socket.on("code-update", (newCode) => {
-        if (editor && editor.getValue() !== newCode) {
-          isReceivingUpdate = true;
-          const pos = editor.getPosition();
-          editor.setValue(newCode);
-          editor.setPosition(pos);
-          isReceivingUpdate = false;
-        }
-      });
-
-      socket.on("language-update", (newLang) => {
-        const dropdown = document.getElementById("language");
-        if (dropdown.value !== newLang) {
-          dropdown.value = newLang;
-          monaco.editor.setModelLanguage(editor.getModel(), newLang);
-        }
-      });
-
-      socket.on("execution-result", (result) => {
-        const outputDiv = document.getElementById("output");
-        // Don't clear completely, just append or replace based on your pref.
-        // Here we replace for cleanliness.
-        outputDiv.innerText = "";
-
-        if (result.output) {
-          const span = document.createElement("span");
-          span.classList.add("success");
-          span.innerText = result.output;
-          outputDiv.appendChild(span);
-        }
-        if (result.error) {
-          const errElem = document.createElement("span");
-          errElem.classList.add("error");
-          errElem.innerText = "\n" + result.error;
-          outputDiv.appendChild(errElem);
-        }
-      });
-
-      // --- Functions ---
-      function copyRoomLink() {
-        const url = window.location.href;
-        navigator.clipboard.writeText(url).then(() => {
-          const btn = document.querySelector(".btn-share");
-          const originalText = btn.innerText;
-          btn.innerText = "✅ Copied!";
-          setTimeout(() => (btn.innerText = originalText), 2000);
-        });
-      }
-
-      function clearConsole() {
-        document.getElementById("output").innerText = "";
-      }
-
-      function changeLanguage() {
-        const lang = document.getElementById("language").value;
-        let code = "";
-        if (lang === "cpp") {
-          code =
-            '#include <iostream>\n\nint main() {\n    std::cout << "Hello from C++" << std::endl;\n    return 0;\n}';
-        } else {
-          code = 'print("Hello from Python")';
-        }
-        editor.setValue(code);
-        monaco.editor.setModelLanguage(editor.getModel(), lang);
-        socket.emit("language-change", { roomId, language: lang });
-        socket.emit("code-update", { roomId, code });
-      }
-
-      function runCode() {
-        const outputDiv = document.getElementById("output");
-        outputDiv.innerText = "Running...";
-
-        const lang = document.getElementById("language").value;
-        socket.emit("run-code", {
-          roomId: roomId,
-          language: lang,
-          code: editor.getValue(),
-        });
-      }
-    </script>
+    <script src="script.js"></script>
   </body>
 </html>
