@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Collaborative IDE</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        display: flex;
+        height: 100vh;
+        margin: 0;
+      }
+      #editor-container {
+        flex: 1;
+        padding: 10px;
+        display: flex;
+        flex-direction: column;
+      }
+      #output-container {
+        width: 300px;
+        background: #1e1e1e;
+        color: #ddd;
+        padding: 10px;
+        font-family: monospace;
+      }
+      textarea {
+        flex: 1;
+        font-family: monospace;
+        font-size: 16px;
+        padding: 10px;
+      }
+      button {
+        padding: 10px;
+        background: #007bff;
+        color: white;
+        border: none;
+        cursor: pointer;
+        margin-bottom: 10px;
+      }
+      button:hover {
+        background: #0056b3;
+      }
+      .error {
+        color: #ff6b6b;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="editor-container">
+      <button onclick="runCode()">Run Code (Python)</button>
+      <textarea id="code" placeholder="Type Python code here...">
+print("Hello World!")</textarea
+      >
+    </div>
+
+    <div id="output-container">
+      <h3>Output:</h3>
+      <pre id="output"></pre>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+      const socket = io();
+      const codeArea = document.getElementById("code");
+      const outputArea = document.getElementById("output");
+
+      // 1. Send code changes when typing
+      codeArea.addEventListener("input", () => {
+        socket.emit("code-update", codeArea.value);
+      });
+
+      // 2. Receive code changes from others
+      socket.on("code-update", (newCode) => {
+        // Only update if it's different to avoid cursor jumping
+        if (codeArea.value !== newCode) {
+          codeArea.value = newCode;
+        }
+      });
+
+      // 3. Send "Run" command
+      function runCode() {
+        outputArea.innerText = "Running...";
+        outputArea.classList.remove("error");
+
+        socket.emit("run-code", {
+          language: "python",
+          code: codeArea.value,
+        });
+      }
+
+      // 4. Display Result
+      socket.on("execution-result", (result) => {
+        outputArea.innerText = ""; // Clear previous output
+
+        if (result.output) {
+          outputArea.innerText += result.output;
+        }
+        if (result.error) {
+          const errElem = document.createElement("span");
+          errElem.classList.add("error");
+          errElem.innerText = "\n" + result.error;
+          outputArea.appendChild(errElem);
+        }
+      });
+    </script>
+  </body>
+</html>
