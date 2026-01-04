@@ -44,7 +44,7 @@ The system uses a **Hybrid Microservices Architecture**:
 ### Quick Start
 1.  **Clone the repository**
     ```bash
-    git clone https://github.com/yourusername/collaborative-ide.git
+    git clone https://github.com/alhusseinalahmed/collaborative-ide.git
     cd collaborative-ide
     ```
 
