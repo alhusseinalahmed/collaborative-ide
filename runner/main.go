@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context" // <--- CHANGE 1: Import context
 	"encoding/json"
 	"fmt"
@@ -20,6 +21,23 @@ type ExecutionResponse struct {
 	Error  string `json:"error,omitempty"`
 }
 
+// executeHandler handles a POST request to execute a snippet of code in a Docker container.
+//
+// The request body should contain a JSON object with the following structure:
+//
+//	{
+//	 "language": string, // Language of the code. Currently only "python" is supported.
+//	 "code": string // Code to be executed.
+//	}
+//
+// The response will be a JSON object with the following structure:
+//
+//	{
+//	 "output": string, // Output of the executed code.
+//	 "error": string, // Error message if execution failed. May be empty.
+//	}
+//
+// If the execution takes longer than 2 seconds, the execution will be terminated and the response will contain an error message.
 func executeHandler(w http.ResponseWriter, r *http.Request) {
 	var req ExecutionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -40,42 +58,53 @@ func executeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	tmpFile.Close()
 
-	// --- CHANGE 3: The Safety Mechanism ---
-	
 	// Create a "Context" with a 2-second timeout.
 	// This creates a timer. If the timer hits 2s, the context "dies".
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel() // Clean up the timer when we are done
 
-	// We use CommandContext instead of Command
-	// This attaches the timer to the Docker process.
+	// Resource Limits ---
+	// We add flags to restrict the container:
+	// --memory 128m: Crash if it uses > 128MB RAM
+	// --cpus 0.5: Use max 50% of one CPU core
+	// --network none: Disable Internet access (Security!)
 	cmd := exec.CommandContext(ctx, "docker", "run", "--rm",
+		"--memory=128m",
+		"--cpus=0.5",
+		"--network=none",
 		"-v", fmt.Sprintf("%s:/app/script.py", tmpFile.Name()),
 		"python:3.9-alpine",
 		"python", "/app/script.py",
 	)
 
-	output, err := cmd.CombinedOutput()
+	// Separate Output Streams ---
+	// We create two buffers to capture streams separately
+	var stdoutBuf, stderrBuf bytes.Buffer
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
 
-	// If there was an error, we check IF it was caused by the timeout
+	// Run the command
+	err = cmd.Run()
+
+	// Handle Timeouts specifically
 	if ctx.Err() == context.DeadlineExceeded {
-		fmt.Println("Process timed out!") // Log to server console
-		output = []byte("Error: Execution timed out (Limit: 2 seconds)")
+		stderrBuf.WriteString("\nExecution Timed Out (Limit: 2s)")
 	}
 
-	// --------------------------------------
-
+	// Prepare response
 	resp := ExecutionResponse{
-		Output: string(output),
-	}
-	if err != nil && ctx.Err() != context.DeadlineExceeded {
-		resp.Error = err.Error()
+		Output: stdoutBuf.String(),
+		Error:  stderrBuf.String(),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }
 
+// Main entry point for the service.
+// This function sets up an HTTP server that listens on port 8080
+// and handles incoming requests to /execute.
+// It will start the server and block until an error occurs.
 func main() {
 	http.HandleFunc("/execute", executeHandler)
 	fmt.Println("Runner Service starting on :8080...")
