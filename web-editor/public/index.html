@@ -5,101 +5,142 @@
     <title>Collaborative IDE</title>
     <style>
       body {
-        font-family: sans-serif;
+        margin: 0;
         display: flex;
         height: 100vh;
-        margin: 0;
+        background-color: #1e1e1e;
+        color: #fff;
+        font-family: sans-serif;
       }
       #editor-container {
         flex: 1;
-        padding: 10px;
+        height: 100%;
+      }
+      #sidebar {
+        width: 300px;
+        background: #252526;
         display: flex;
         flex-direction: column;
+        border-left: 1px solid #333;
       }
-      #output-container {
-        width: 300px;
-        background: #1e1e1e;
-        color: #ddd;
-        padding: 10px;
-        font-family: monospace;
-      }
-      textarea {
+      #output {
         flex: 1;
-        font-family: monospace;
-        font-size: 16px;
         padding: 10px;
+        font-family: "Consolas", monospace;
+        white-space: pre-wrap;
+        overflow-y: auto;
+        font-size: 14px;
+      }
+      .header {
+        padding: 10px;
+        background: #333;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
       }
       button {
-        padding: 10px;
-        background: #007bff;
+        padding: 8px 16px;
+        background: #0e639c;
         color: white;
         border: none;
         cursor: pointer;
-        margin-bottom: 10px;
+        font-weight: bold;
       }
       button:hover {
-        background: #0056b3;
+        background: #1177bb;
       }
       .error {
-        color: #ff6b6b;
-      }
+        color: #f48771;
+      } /* VS Code red color */
     </style>
   </head>
   <body>
-    <div id="editor-container">
-      <button onclick="runCode()">Run Code (Python)</button>
-      <textarea id="code" placeholder="Type Python code here...">
-print("Hello World!")</textarea
-      >
+    <div id="editor-container"></div>
+
+    <div id="sidebar">
+      <div class="header">
+        <span>Console</span>
+        <button onclick="runCode()">▶ Run</button>
+      </div>
+      <div id="output"></div>
     </div>
 
-    <div id="output-container">
-      <h3>Output:</h3>
-      <pre id="output"></pre>
-    </div>
+    <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
 
-    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
     <script>
       const socket = io();
-      const codeArea = document.getElementById("code");
-      const outputArea = document.getElementById("output");
+      let editor; // Global variable for the editor instance
+      let isReceivingUpdate = false; // Flag to prevent infinite loops
 
-      // 1. Send code changes when typing
-      codeArea.addEventListener("input", () => {
-        socket.emit("code-update", codeArea.value);
+      // 1. Initialize Monaco Editor
+      require.config({
+        paths: {
+          vs: "https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs",
+        },
       });
 
-      // 2. Receive code changes from others
+      require(["vs/editor/editor.main"], function () {
+        editor = monaco.editor.create(
+          document.getElementById("editor-container"),
+          {
+            value:
+              'print("Hello from Monaco!")\nimport time\ntime.sleep(1)\nprint("Done")',
+            language: "python",
+            theme: "vs-dark", // The classic Dark Mode
+            automaticLayout: true,
+          }
+        );
+
+        // 2. Listen for changes (User Typing)
+        editor.onDidChangeModelContent((event) => {
+          // If the change came from the server, don't emit it back!
+          if (isReceivingUpdate) return;
+
+          const code = editor.getValue();
+          socket.emit("code-update", code);
+        });
+      });
+
+      // 3. Receive changes from other users
       socket.on("code-update", (newCode) => {
-        // Only update if it's different to avoid cursor jumping
-        if (codeArea.value !== newCode) {
-          codeArea.value = newCode;
+        if (editor && editor.getValue() !== newCode) {
+          isReceivingUpdate = true; // Set flag
+
+          // Save cursor position
+          const position = editor.getPosition();
+
+          editor.setValue(newCode);
+
+          // Restore cursor position (Simple fix, not perfect yet)
+          editor.setPosition(position);
+
+          isReceivingUpdate = false; // Reset flag
         }
       });
 
-      // 3. Send "Run" command
+      // 4. Run Code Logic
       function runCode() {
-        outputArea.innerText = "Running...";
-        outputArea.classList.remove("error");
+        const outputDiv = document.getElementById("output");
+        outputDiv.innerText = "Running...";
+        outputDiv.classList.remove("error");
 
         socket.emit("run-code", {
           language: "python",
-          code: codeArea.value,
+          code: editor.getValue(), // Get code from Monaco
         });
       }
 
-      // 4. Display Result
       socket.on("execution-result", (result) => {
-        outputArea.innerText = ""; // Clear previous output
+        const outputDiv = document.getElementById("output");
+        outputDiv.innerText = "";
 
-        if (result.output) {
-          outputArea.innerText += result.output;
-        }
+        if (result.output) outputDiv.innerText += result.output;
         if (result.error) {
           const errElem = document.createElement("span");
           errElem.classList.add("error");
           errElem.innerText = "\n" + result.error;
-          outputArea.appendChild(errElem);
+          outputDiv.appendChild(errElem);
         }
       });
     </script>
